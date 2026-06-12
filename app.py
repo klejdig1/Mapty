@@ -6,6 +6,7 @@ from functools import wraps
 import jwt
 import os
 from dotenv import load_dotenv
+import traceback
 
 load_dotenv()
 
@@ -15,7 +16,7 @@ CORS(app)
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///mapty.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-super-secret-key-change-this')
 
 db = SQLAlchemy(app)
 
@@ -88,7 +89,8 @@ def token_required(f):
             current_user = User.query.get(data['user_id'])
             if not current_user:
                 return jsonify({'message': 'Invalid user'}), 401
-        except:
+        except Exception as e:
+            print(f"Token error: {e}")
             return jsonify({'message': 'Invalid token'}), 401
         return f(current_user, *args, **kwargs)
     return decorated
@@ -96,117 +98,191 @@ def token_required(f):
 # Routes
 @app.route('/api/auth/register', methods=['POST'])
 def register():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not email or not password:
-        return jsonify({'message': 'Missing email or password'}), 400
-    
-    if User.query.filter_by(email=email).first():
-        return jsonify({'message': 'Email already exists'}), 400
-    
-    from werkzeug.security import generate_password_hash
-    user = User(email=email, password=generate_password_hash(password))
-    db.session.add(user)
-    db.session.commit()
-    
-    token = jwt.encode({'user_id': user.id}, app.config['SECRET_KEY'], algorithm='HS256')
-    return jsonify({
-        'message': 'User registered',
-        'token': token,
-        'user': user.to_dict()
-    }), 201
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+            
+        email = data.get('email', '').strip()
+        password = data.get('password', '').strip()
+        
+        print(f"Registration attempt - Email: {email}")
+        
+        if not email or not password:
+            return jsonify({'message': 'Missing email or password'}), 400
+        
+        if User.query.filter_by(email=email).first():
+            return jsonify({'message': 'Email already exists'}), 400
+        
+        from werkzeug.security import generate_password_hash
+        hashed_password = generate_password_hash(password)
+        user = User(email=email, password=hashed_password)
+        
+        db.session.add(user)
+        db.session.commit()
+        
+        print(f"User registered successfully: {email}")
+        
+        token = jwt.encode({'user_id': user.id}, app.config['SECRET_KEY'], algorithm='HS256')
+        return jsonify({
+            'message': 'User registered successfully',
+            'token': token,
+            'user': user.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        error_msg = str(e)
+        print(f"Registration error: {error_msg}")
+        print(traceback.format_exc())
+        return jsonify({'message': f'Registration failed: {error_msg}'}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({'message': 'Invalid email or password'}), 401
-    
-    from werkzeug.security import check_password_hash
-    if not check_password_hash(user.password, password):
-        return jsonify({'message': 'Invalid email or password'}), 401
-    
-    token = jwt.encode({'user_id': user.id}, app.config['SECRET_KEY'], algorithm='HS256')
-    return jsonify({
-        'message': 'Login successful',
-        'token': token,
-        'user': user.to_dict()
-    }), 200
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+            
+        email = data.get('email', '').strip()
+        password = data.get('password', '').strip()
+        
+        print(f"Login attempt - Email: {email}")
+        
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({'message': 'Invalid email or password'}), 401
+        
+        from werkzeug.security import check_password_hash
+        if not check_password_hash(user.password, password):
+            return jsonify({'message': 'Invalid email or password'}), 401
+        
+        token = jwt.encode({'user_id': user.id}, app.config['SECRET_KEY'], algorithm='HS256')
+        
+        print(f"User logged in successfully: {email}")
+        
+        return jsonify({
+            'message': 'Login successful',
+            'token': token,
+            'user': user.to_dict()
+        }), 200
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Login error: {error_msg}")
+        print(traceback.format_exc())
+        return jsonify({'message': f'Login failed: {error_msg}'}), 500
 
 @app.route('/api/workouts', methods=['GET'])
 @token_required
 def get_workouts(current_user):
-    workouts = Workout.query.filter_by(user_id=current_user.id).all()
-    return jsonify([w.to_dict() for w in workouts]), 200
+    try:
+        workouts = Workout.query.filter_by(user_id=current_user.id).all()
+        return jsonify([w.to_dict() for w in workouts]), 200
+    except Exception as e:
+        print(f"Get workouts error: {e}")
+        return jsonify({'message': 'Failed to fetch workouts'}), 500
 
 @app.route('/api/workouts', methods=['POST'])
 @token_required
 def create_workout(current_user):
-    data = request.get_json()
-    
-    workout_id = str(int(datetime.utcnow().timestamp() * 1000))[-10:]
-    coords_str = f"{data['coords'][0]},{data['coords'][1]}"
-    
-    workout = Workout(
-        id=workout_id,
-        user_id=current_user.id,
-        type=data['type'],
-        distance=data['distance'],
-        duration=data['duration'],
-        coords=coords_str,
-        date=datetime.fromisoformat(data.get('date', datetime.utcnow().isoformat())),
-        description=data.get('description'),
-        cadence=data.get('cadence'),
-        pace=data.get('pace'),
-        elevation_gain=data.get('elevationGain'),
-        speed=data.get('speed')
-    )
-    
-    db.session.add(workout)
-    db.session.commit()
-    
-    return jsonify(workout.to_dict()), 201
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'message': 'No data provided'}), 400
+        
+        workout_id = str(int(datetime.utcnow().timestamp() * 1000))[-10:]
+        coords_str = f"{data['coords'][0]},{data['coords'][1]}"
+        
+        workout = Workout(
+            id=workout_id,
+            user_id=current_user.id,
+            type=data['type'],
+            distance=data['distance'],
+            duration=data['duration'],
+            coords=coords_str,
+            date=datetime.fromisoformat(data.get('date', datetime.utcnow().isoformat())),
+            description=data.get('description'),
+            cadence=data.get('cadence'),
+            pace=data.get('pace'),
+            elevation_gain=data.get('elevationGain'),
+            speed=data.get('speed')
+        )
+        
+        db.session.add(workout)
+        db.session.commit()
+        
+        print(f"Workout created: {workout_id}")
+        
+        return jsonify(workout.to_dict()), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Create workout error: {e}")
+        print(traceback.format_exc())
+        return jsonify({'message': f'Failed to create workout: {str(e)}'}), 500
 
 @app.route('/api/workouts/<workout_id>', methods=['PUT'])
 @token_required
 def update_workout(current_user, workout_id):
-    workout = Workout.query.filter_by(id=workout_id, user_id=current_user.id).first()
-    if not workout:
-        return jsonify({'message': 'Workout not found'}), 404
-    
-    data = request.get_json()
-    if 'clicks' in data:
-        workout.clicks = data['clicks']
-    
-    db.session.commit()
-    return jsonify(workout.to_dict()), 200
+    try:
+        workout = Workout.query.filter_by(id=workout_id, user_id=current_user.id).first()
+        if not workout:
+            return jsonify({'message': 'Workout not found'}), 404
+        
+        data = request.get_json()
+        if 'clicks' in data:
+            workout.clicks = data['clicks']
+        
+        db.session.commit()
+        return jsonify(workout.to_dict()), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Update workout error: {e}")
+        return jsonify({'message': 'Failed to update workout'}), 500
 
 @app.route('/api/workouts/<workout_id>', methods=['DELETE'])
 @token_required
 def delete_workout(current_user, workout_id):
-    workout = Workout.query.filter_by(id=workout_id, user_id=current_user.id).first()
-    if not workout:
-        return jsonify({'message': 'Workout not found'}), 404
-    
-    db.session.delete(workout)
-    db.session.commit()
-    
-    return jsonify({'message': 'Workout deleted'}), 200
+    try:
+        workout = Workout.query.filter_by(id=workout_id, user_id=current_user.id).first()
+        if not workout:
+            return jsonify({'message': 'Workout not found'}), 404
+        
+        db.session.delete(workout)
+        db.session.commit()
+        
+        return jsonify({'message': 'Workout deleted'}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Delete workout error: {e}")
+        return jsonify({'message': 'Failed to delete workout'}), 500
 
 @app.route('/api/workouts/delete-all', methods=['DELETE'])
 @token_required
 def delete_all_workouts(current_user):
-    Workout.query.filter_by(user_id=current_user.id).delete()
-    db.session.commit()
-    return jsonify({'message': 'All workouts deleted'}), 200
+    try:
+        Workout.query.filter_by(user_id=current_user.id).delete()
+        db.session.commit()
+        return jsonify({'message': 'All workouts deleted'}), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Delete all workouts error: {e}")
+        return jsonify({'message': 'Failed to delete workouts'}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok'}), 200
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        print("Database initialized")
+    print("Starting Flask server on http://localhost:5000")
     app.run(debug=True, port=5000)
