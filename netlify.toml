@@ -1,0 +1,11 @@
+[build]
+  command = "pip install -r requirements.txt"
+  functions = "netlify/functions"
+  
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/app/:splat"
+  status = 200
